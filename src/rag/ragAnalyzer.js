@@ -128,6 +128,8 @@ const NEGATIVE_ACTION_KEYWORDS = {
   'won\'t': 10,
   'wouldn\'t': 10,
   'would not': 10,
+  'should not': 8,
+  'must not': 10,
   // Missing/absence indicators
   'missing': 12,
   'absent': 10,
@@ -137,6 +139,19 @@ const NEGATIVE_ACTION_KEYWORDS = {
   'does not exist': 12,
   'doesn\'t exist': 12,
   'nonexistent': 10,
+  'not set': 12,
+  'unset': 10,
+  'not defined': 12,
+  'not available': 12,
+  'unavailable': 12,
+  // Null/undefined indicators (CRITICAL for the user's case)
+  'undefined': 18,
+  'null': 15,
+  'nil': 12,
+  'none': 10,
+  'n/a': 12,
+  'empty': 10,
+  'blank': 8,
   // Invalid/bad state indicators
   'invalid': 12,
   'malformed': 12,
@@ -145,12 +160,17 @@ const NEGATIVE_ACTION_KEYWORDS = {
   'broken': 12,
   'bad': 8,
   'illegal': 12,
+  'incorrect': 10,
+  'wrong': 8,
+  'mismatch': 10,
+  'inconsistent': 12,
   // Timeout/connection issues
   'timeout': 15,
   'timed out': 15,
   'timedout': 15,
   'expired': 10,
   'expiration': 8,
+  'deadline exceeded': 15,
   // Connection/network issues
   'refused': 15,
   'refused connection': 18,
@@ -161,6 +181,9 @@ const NEGATIVE_ACTION_KEYWORDS = {
   'connection failed': 18,
   'connection error': 18,
   'network error': 15,
+  'connection lost': 15,
+  'connection reset': 12,
+  'connection closed': 10,
   // Access/permission issues
   'denied': 12,
   'forbidden': 12,
@@ -168,6 +191,8 @@ const NEGATIVE_ACTION_KEYWORDS = {
   'unauthenticated': 12,
   'permission denied': 15,
   'access denied': 15,
+  'not permitted': 12,
+  'not allowed': 10,
   // Crash/termination indicators
   'crash': 20,
   'crashed': 20,
@@ -178,6 +203,8 @@ const NEGATIVE_ACTION_KEYWORDS = {
   'segfault': 25,
   'segmentation fault': 25,
   'core dump': 20,
+  'panic': 20,
+  'fatal': 20,
   // Retry/recovery indicators (suggest prior failure)
   'retry': 8,
   'retrying': 8,
@@ -185,77 +212,241 @@ const NEGATIVE_ACTION_KEYWORDS = {
   'recovering': 8,
   'recovery': 8,
   'fallback': 8,
+  'degraded': 10,
   // Rejection indicators
   'rejected': 12,
   'reject': 10,
   'declined': 10,
   'refused': 12,
+  // Status indicators
+  'unsuccessful': 15,
+  'incomplete': 10,
+  'partial': 8,
+  'skipped': 8,
+  'ignored': 6,
+  'dropped': 12,
+  'lost': 12,
+  'blocked': 10,
+  'stuck': 10,
+  'hung': 12,
+  'frozen': 12,
+  'unresponsive': 15,
 };
+
+/**
+ * Null/undefined value indicators - these indicate missing or invalid data
+ */
+const NULL_VALUE_INDICATORS = [
+  'undefined', 'null', 'nil', 'none', 'empty', 'n/a', 'na', 'not available',
+  'not set', 'unset', 'missing', 'absent', 'void', 'blank', '""', "''",
+  '[]', '{}', '<null>', '<undefined>', '<empty>', '<none>', '[null]',
+  '[undefined]', '(null)', '(undefined)', 'NaN', 'unknown', 'not defined',
+];
+
+/**
+ * Failure/error status indicators
+ */
+const FAILURE_STATUS_INDICATORS = [
+  'failed', 'failure', 'error', 'err', 'unsuccessful', 'rejected', 'denied',
+  'refused', 'timeout', 'timed out', 'expired', 'invalid', 'broken', 'corrupt',
+  'disconnected', 'unreachable', 'unavailable', 'down', 'offline', 'stopped',
+  'terminated', 'aborted', 'crashed', 'killed', 'dead', 'exception', 'fault',
+  'bad', 'wrong', 'incorrect', 'mismatch', 'conflict', 'blocked', 'stuck',
+  'hung', 'frozen', 'unresponsive', 'skipped', 'ignored', 'dropped', 'lost',
+];
+
+/**
+ * Build dynamic regex for field: value patterns where value indicates an issue
+ * This catches patterns like "Session ID: undefined", "User ID: null", etc.
+ */
+function buildFieldValuePatterns() {
+  const patterns = [];
+
+  // Create pattern for "Field Name: <null_value>" - captures the specific case mentioned
+  const nullValueRegex = NULL_VALUE_INDICATORS.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+
+  // Pattern: "Something Something: undefined" or "Something_Something: null" etc.
+  patterns.push({
+    regex: new RegExp(`[A-Za-z][A-Za-z0-9_ ]*:\\s*(${nullValueRegex})\\s*($|[,;\\]\\)\\}])`, 'i'),
+    score: 28,
+    category: 'NULL_VALUE_ASSIGNMENT'
+  });
+
+  // Pattern: "Something = undefined" or "something=null"
+  patterns.push({
+    regex: new RegExp(`[A-Za-z][A-Za-z0-9_]*\\s*=\\s*(${nullValueRegex})\\s*($|[,;\\]\\)\\}])`, 'i'),
+    score: 28,
+    category: 'NULL_VALUE_ASSIGNMENT'
+  });
+
+  // Pattern: value "is undefined/null/empty"
+  patterns.push({
+    regex: new RegExp(`\\b(is|was|are|were|became|becomes)\\s+(${nullValueRegex})\\b`, 'i'),
+    score: 25,
+    category: 'NULL_STATE'
+  });
+
+  // Pattern: "got undefined", "received null", "returned empty"
+  patterns.push({
+    regex: new RegExp(`\\b(got|received|returned|yielded|produced|gave|gives)\\s+(${nullValueRegex})\\b`, 'i'),
+    score: 25,
+    category: 'NULL_RETURN'
+  });
+
+  // Create pattern for "Field Name: <failure_status>"
+  const failureRegex = FAILURE_STATUS_INDICATORS.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+
+  // Pattern: "Something: failed" or "connection: timeout"
+  patterns.push({
+    regex: new RegExp(`[A-Za-z][A-Za-z0-9_ ]*:\\s*(${failureRegex})\\s*($|[,;\\]\\)\\}])`, 'i'),
+    score: 25,
+    category: 'STATUS_FAILURE'
+  });
+
+  // Pattern: "Something = failed"
+  patterns.push({
+    regex: new RegExp(`[A-Za-z][A-Za-z0-9_]*\\s*=\\s*(${failureRegex})\\s*($|[,;\\]\\)\\}])`, 'i'),
+    score: 25,
+    category: 'STATUS_FAILURE'
+  });
+
+  return patterns;
+}
 
 /**
  * Structural patterns that indicate error states
  * These are regex-like patterns with scoring
  */
 const STRUCTURAL_PATTERNS = [
-  // Arrow patterns pointing to error states
-  { regex: /->?\s*(undefined|null|nil|none|false|empty|0|""|''|\[\]|\{\})\s*$/i, score: 25, category: 'NULL_STATE' },
-  { regex: /=>\s*(undefined|null|nil|none|false|empty)\s*$/i, score: 25, category: 'NULL_STATE' },
-  { regex: /:\s*(undefined|null|nil|none)\s*$/i, score: 20, category: 'NULL_STATE' },
-  { regex: /returned?\s+(undefined|null|nil|none|nothing|empty)/i, score: 22, category: 'NULL_RETURN' },
-  { regex: /returns?\s+(undefined|null|nil|none|nothing|empty)/i, score: 22, category: 'NULL_RETURN' },
+  // === ARROW PATTERNS (-> or =>) pointing to error states ===
+  { regex: /->?\s*(undefined|null|nil|none|false|empty|0|""|''|\[\]|\{\}|N\/A)\s*($|[,;])/i, score: 28, category: 'NULL_STATE' },
+  { regex: /=>\s*(undefined|null|nil|none|false|empty|N\/A)\s*($|[,;])/i, score: 28, category: 'NULL_STATE' },
 
-  // "X not found" patterns
-  { regex: /\b\w+\s+not\s+found\b/i, score: 20, category: 'NOT_FOUND' },
-  { regex: /\bnot\s+found\s*:/i, score: 22, category: 'NOT_FOUND' },
-  { regex: /\b(could|can)n?[o']?t?\s+(find|locate|get|retrieve|fetch|load)\b/i, score: 18, category: 'NOT_FOUND' },
+  // === COLON PATTERNS (key: value) - THIS CATCHES "Session ID in Message Data: undefined" ===
+  { regex: /[A-Za-z][A-Za-z0-9_ ]*:\s*undefined\s*($|[,;)\]}])/i, score: 30, category: 'UNDEFINED_VALUE' },
+  { regex: /[A-Za-z][A-Za-z0-9_ ]*:\s*null\s*($|[,;)\]}])/i, score: 28, category: 'NULL_VALUE' },
+  { regex: /[A-Za-z][A-Za-z0-9_ ]*:\s*N\/A\s*($|[,;)\]}])/i, score: 25, category: 'NOT_AVAILABLE' },
+  { regex: /[A-Za-z][A-Za-z0-9_ ]*:\s*(empty|none|nil|missing)\s*($|[,;)\]}])/i, score: 25, category: 'EMPTY_VALUE' },
+  { regex: /[A-Za-z][A-Za-z0-9_ ]*:\s*(failed|failure|error|timeout)\s*($|[,;)\]}])/i, score: 28, category: 'STATUS_FAILURE' },
 
-  // "X failed" patterns
-  { regex: /\b\w+\s+failed\s*(to|with|:|\[|\(|$)/i, score: 20, category: 'OPERATION_FAILED' },
-  { regex: /\bfailed\s+to\s+\w+/i, score: 20, category: 'OPERATION_FAILED' },
-  { regex: /\bfailure\s+(in|on|at|during|while)\b/i, score: 18, category: 'OPERATION_FAILED' },
+  // === EQUALS PATTERNS (key = value) ===
+  { regex: /[A-Za-z][A-Za-z0-9_]*\s*=\s*undefined\b/i, score: 28, category: 'UNDEFINED_VALUE' },
+  { regex: /[A-Za-z][A-Za-z0-9_]*\s*=\s*null\b/i, score: 26, category: 'NULL_VALUE' },
+  { regex: /[A-Za-z][A-Za-z0-9_]*\s*=\s*N\/A\b/i, score: 24, category: 'NOT_AVAILABLE' },
 
-  // Exception patterns
-  { regex: /\bexception\s*:/i, score: 25, category: 'EXCEPTION' },
-  { regex: /\b(throw|threw|thrown)\s+\w*exception/i, score: 25, category: 'EXCEPTION' },
-  { regex: /\b\w+exception\b/i, score: 20, category: 'EXCEPTION' },
+  // === "IS" PATTERNS (value is undefined/null) ===
+  { regex: /\b\w+\s+(is|was|are|were)\s+(undefined|null|empty|missing|invalid|unavailable)\b/i, score: 25, category: 'STATE_INVALID' },
+
+  // === RETURN/RESULT PATTERNS ===
+  { regex: /returned?\s+(undefined|null|nil|none|nothing|empty|false)/i, score: 25, category: 'NULL_RETURN' },
+  { regex: /returns?\s+(undefined|null|nil|none|nothing|empty|false)/i, score: 25, category: 'NULL_RETURN' },
+  { regex: /result\s*(is|was|:)?\s*(undefined|null|empty|none|invalid)/i, score: 25, category: 'NULL_RETURN' },
+  { regex: /(got|received|yields?|gives?|gave)\s+(undefined|null|empty|nothing|false)/i, score: 24, category: 'NULL_RETURN' },
+
+  // === "NOT FOUND" PATTERNS ===
+  { regex: /\b\w+\s+not\s+found\b/i, score: 22, category: 'NOT_FOUND' },
+  { regex: /\bnot\s+found\s*[:\-]/i, score: 24, category: 'NOT_FOUND' },
+  { regex: /\b(could|can)n?'?t?\s+(find|locate|get|retrieve|fetch|load|access)\b/i, score: 20, category: 'NOT_FOUND' },
+  { regex: /\b(no|zero|0)\s+(results?|records?|rows?|entries?|items?|data)\s+(found|returned|available)/i, score: 20, category: 'EMPTY_RESULT' },
+  { regex: /\bdoes\s*n'?o?t?\s+exist\b/i, score: 22, category: 'NOT_FOUND' },
+
+  // === "FAILED" PATTERNS ===
+  { regex: /\b\w+\s+failed\s*(to|with|:|$)/i, score: 22, category: 'OPERATION_FAILED' },
+  { regex: /\bfailed\s+to\s+\w+/i, score: 22, category: 'OPERATION_FAILED' },
+  { regex: /\bfailure\s+(in|on|at|during|while|of)\b/i, score: 20, category: 'OPERATION_FAILED' },
+  { regex: /\b(operation|request|call|action|process)\s+(failed|unsuccessful|rejected)/i, score: 22, category: 'OPERATION_FAILED' },
+
+  // === EXCEPTION/ERROR PATTERNS ===
+  { regex: /\bexception\s*:/i, score: 28, category: 'EXCEPTION' },
+  { regex: /\b(throw|threw|thrown|raising?|raised?)\s+\w*exception/i, score: 28, category: 'EXCEPTION' },
+  { regex: /\b\w+exception\b/i, score: 22, category: 'EXCEPTION' },
   { regex: /\b\w+error\b/i, score: 18, category: 'ERROR_TYPE' },
+  { regex: /\berror\s*:\s*.+/i, score: 22, category: 'ERROR_MESSAGE' },
+  { regex: /\b(fatal|critical|severe)\s+(error|exception|failure)/i, score: 30, category: 'CRITICAL_ERROR' },
 
-  // State retrieval failures
-  { regex: /\b(get|fetch|retrieve|load|read)\s+\w+\s*(variable|value|data|config|setting|property).*->\s*(undefined|null)/i, score: 30, category: 'STATE_RETRIEVAL_FAILURE' },
-  { regex: /\bvariable\s+not\s+found\b/i, score: 25, category: 'STATE_RETRIEVAL_FAILURE' },
-  { regex: /\bsession\s+\w*\s*(not\s+found|undefined|null|expired|invalid)/i, score: 28, category: 'SESSION_ERROR' },
-  { regex: /\bcache\s+(miss|failure|error|expired)/i, score: 22, category: 'CACHE_ERROR' },
+  // === SESSION/STATE RETRIEVAL FAILURES ===
+  { regex: /\b(get|fetch|retrieve|load|read)\s+\w+\s*(variable|value|data|config|setting|property).*[:\-=>\s]+(undefined|null|empty|missing)/i, score: 32, category: 'STATE_RETRIEVAL_FAILURE' },
+  { regex: /\b(session|context|state)\s+\w*\s*(not\s+found|undefined|null|expired|invalid|missing|empty)/i, score: 30, category: 'SESSION_ERROR' },
+  { regex: /\bvariable\s+(not\s+found|undefined|null|missing|empty)/i, score: 28, category: 'STATE_RETRIEVAL_FAILURE' },
+  { regex: /\b(user|account|profile|session)\s*(id|ID|Id)?\s*[:\-=>]?\s*(undefined|null|missing|not\s+found|N\/A)/i, score: 30, category: 'IDENTITY_ERROR' },
+  { regex: /\bcache\s+(miss|failure|error|expired|empty|invalid)/i, score: 24, category: 'CACHE_ERROR' },
+  { regex: /\b(lookup|search|query)\s+(failed|returned\s+nothing|no\s+results?)/i, score: 22, category: 'LOOKUP_FAILURE' },
 
-  // Database/query errors
-  { regex: /\b(sql|database|db|query)\s*(error|exception|failure|failed)/i, score: 25, category: 'DATABASE_ERROR' },
-  { regex: /\bquery\s+failed\b/i, score: 22, category: 'DATABASE_ERROR' },
-  { regex: /\bdeadlock\b/i, score: 25, category: 'DATABASE_ERROR' },
-  { regex: /\bduplicate\s+(key|entry)\b/i, score: 20, category: 'DATABASE_ERROR' },
+  // === DATABASE/QUERY ERRORS ===
+  { regex: /\b(sql|database|db|query|transaction)\s*(error|exception|failure|failed)/i, score: 26, category: 'DATABASE_ERROR' },
+  { regex: /\bquery\s+(failed|error|timeout)/i, score: 24, category: 'DATABASE_ERROR' },
+  { regex: /\bdeadlock\b/i, score: 28, category: 'DATABASE_ERROR' },
+  { regex: /\bduplicate\s+(key|entry|record)/i, score: 22, category: 'DATABASE_ERROR' },
+  { regex: /\bforeign\s+key\s+(violation|constraint|error)/i, score: 24, category: 'DATABASE_ERROR' },
+  { regex: /\bconnection\s+(to\s+)?(database|db)\s*(failed|refused|timeout|lost)/i, score: 26, category: 'DATABASE_ERROR' },
 
-  // API/HTTP errors
-  { regex: /\b(http|api)\s*(error|failure|failed|\d{3})/i, score: 20, category: 'API_ERROR' },
-  { regex: /\bstatus\s*[=:]?\s*(4\d{2}|5\d{2})\b/i, score: 22, category: 'HTTP_ERROR' },
-  { regex: /\b(4\d{2}|5\d{2})\s+(error|response|status)/i, score: 22, category: 'HTTP_ERROR' },
+  // === API/HTTP ERRORS ===
+  { regex: /\b(http|api|rest|graphql)\s*(error|failure|failed|exception)/i, score: 22, category: 'API_ERROR' },
+  { regex: /\bstatus\s*[=:]?\s*(4\d{2}|5\d{2})\b/i, score: 24, category: 'HTTP_ERROR' },
+  { regex: /\b(4\d{2}|5\d{2})\s+(error|response|status)/i, score: 24, category: 'HTTP_ERROR' },
+  { regex: /\bresponse\s*(is|was|:)?\s*(empty|null|undefined|invalid|malformed)/i, score: 24, category: 'API_ERROR' },
+  { regex: /\bapi\s+(call|request)\s+(failed|timeout|rejected)/i, score: 24, category: 'API_ERROR' },
 
-  // Memory/resource errors
-  { regex: /\bout\s+of\s+(memory|space|disk|resources)/i, score: 30, category: 'RESOURCE_ERROR' },
-  { regex: /\bmemory\s+(leak|overflow|exhausted)/i, score: 28, category: 'MEMORY_ERROR' },
-  { regex: /\bheap\s+(overflow|exhausted|full)/i, score: 28, category: 'MEMORY_ERROR' },
-  { regex: /\bstack\s+overflow\b/i, score: 30, category: 'MEMORY_ERROR' },
+  // === CONNECTION/NETWORK ERRORS ===
+  { regex: /\bconnection\s+(failed|refused|reset|timeout|closed|lost|dropped)/i, score: 26, category: 'CONNECTION_ERROR' },
+  { regex: /\b(network|socket|tcp|udp)\s*(error|failure|timeout|unreachable)/i, score: 24, category: 'NETWORK_ERROR' },
+  { regex: /\bhost\s+(unreachable|unknown|not\s+found)/i, score: 24, category: 'NETWORK_ERROR' },
+  { regex: /\bdns\s+(error|failure|timeout|not\s+found)/i, score: 24, category: 'NETWORK_ERROR' },
 
-  // Assertion/validation failures
-  { regex: /\bassertion\s+(failed|error)/i, score: 25, category: 'ASSERTION_FAILURE' },
-  { regex: /\bvalidation\s+(failed|error|failure)/i, score: 20, category: 'VALIDATION_ERROR' },
-  { regex: /\binvalid\s+\w+\s*(format|type|value|input|data)/i, score: 18, category: 'VALIDATION_ERROR' },
+  // === MEMORY/RESOURCE ERRORS ===
+  { regex: /\bout\s+of\s+(memory|space|disk|resources|handles|connections)/i, score: 32, category: 'RESOURCE_ERROR' },
+  { regex: /\bmemory\s+(leak|overflow|exhausted|allocation\s+failed)/i, score: 30, category: 'MEMORY_ERROR' },
+  { regex: /\bheap\s+(overflow|exhausted|full|out\s+of)/i, score: 30, category: 'MEMORY_ERROR' },
+  { regex: /\bstack\s+(overflow|exhausted)/i, score: 32, category: 'MEMORY_ERROR' },
+  { regex: /\b(resource|handle|file|socket)\s+(limit|exhausted|leak)/i, score: 26, category: 'RESOURCE_ERROR' },
 
-  // Authentication/authorization errors
-  { regex: /\b(auth|authentication|authorization)\s*(failed|failure|error|denied)/i, score: 22, category: 'AUTH_ERROR' },
-  { regex: /\btoken\s+(expired|invalid|missing|rejected)/i, score: 22, category: 'AUTH_ERROR' },
-  { regex: /\bcredentials?\s+(invalid|expired|rejected|failed)/i, score: 22, category: 'AUTH_ERROR' },
+  // === VALIDATION ERRORS ===
+  { regex: /\b(assertion|assert)\s+(failed|error|failure)/i, score: 28, category: 'ASSERTION_FAILURE' },
+  { regex: /\bvalidation\s+(failed|error|failure|unsuccessful)/i, score: 22, category: 'VALIDATION_ERROR' },
+  { regex: /\binvalid\s+\w+\s*(format|type|value|input|data|syntax|schema)/i, score: 20, category: 'VALIDATION_ERROR' },
+  { regex: /\b(schema|format|type)\s+(mismatch|error|invalid|violation)/i, score: 22, category: 'VALIDATION_ERROR' },
+  { regex: /\brequired\s+(field|parameter|argument|property)\s+(missing|not\s+provided|undefined|null)/i, score: 26, category: 'VALIDATION_ERROR' },
 
-  // Configuration errors
-  { regex: /\bconfig(uration)?\s*(error|missing|invalid|not\s+found)/i, score: 20, category: 'CONFIG_ERROR' },
-  { regex: /\bmissing\s+(required\s+)?(config|setting|parameter|argument)/i, score: 20, category: 'CONFIG_ERROR' },
+  // === AUTH ERRORS ===
+  { regex: /\b(auth|authentication|authorization|authz?|login)\s*(failed|failure|error|denied|rejected|invalid)/i, score: 24, category: 'AUTH_ERROR' },
+  { regex: /\btoken\s+(expired|invalid|missing|rejected|revoked|not\s+found)/i, score: 24, category: 'AUTH_ERROR' },
+  { regex: /\bcredentials?\s+(invalid|expired|rejected|failed|incorrect|wrong)/i, score: 24, category: 'AUTH_ERROR' },
+  { regex: /\b(access|permission)\s+(denied|forbidden|refused|unauthorized)/i, score: 24, category: 'AUTH_ERROR' },
+  { regex: /\bunauthorized\s+(access|request|operation)/i, score: 24, category: 'AUTH_ERROR' },
+
+  // === CONFIG ERRORS ===
+  { regex: /\bconfig(uration)?\s*(error|missing|invalid|not\s+found|failed|undefined)/i, score: 22, category: 'CONFIG_ERROR' },
+  { regex: /\bmissing\s+(required\s+)?(config|setting|parameter|argument|env|environment)/i, score: 22, category: 'CONFIG_ERROR' },
+  { regex: /\benvironment\s+variable\s+(not\s+set|missing|undefined|empty)/i, score: 24, category: 'CONFIG_ERROR' },
+
+  // === TIMEOUT PATTERNS ===
+  { regex: /\b(timeout|timed?\s*out)\s*(error|exception|failure|occurred|reached|exceeded)?/i, score: 24, category: 'TIMEOUT' },
+  { regex: /\b(operation|request|connection|query)\s+timed?\s*out/i, score: 24, category: 'TIMEOUT' },
+  { regex: /\bexceeded\s+(timeout|time\s*limit|deadline)/i, score: 24, category: 'TIMEOUT' },
+
+  // === PARSING/PROCESSING ERRORS ===
+  { regex: /\b(parse|parsing|deserialize|unmarshal)\s*(error|failed|failure|exception)/i, score: 22, category: 'PARSE_ERROR' },
+  { regex: /\b(json|xml|yaml|csv)\s*(parse|parsing)?\s*(error|failed|invalid|malformed)/i, score: 22, category: 'PARSE_ERROR' },
+  { regex: /\bsyntax\s+error/i, score: 24, category: 'PARSE_ERROR' },
+  { regex: /\bmalformed\s+(data|input|request|response|message|payload)/i, score: 22, category: 'PARSE_ERROR' },
+
+  // === MESSAGE/EVENT PROCESSING ===
+  { regex: /\bmessage\s+(processing|handling)\s+(failed|error|rejected)/i, score: 24, category: 'MESSAGE_ERROR' },
+  { regex: /\b(event|message|request)\s+(dropped|lost|rejected|undelivered|unprocessed)/i, score: 24, category: 'MESSAGE_ERROR' },
+  { regex: /\bqueue\s+(full|overflow|blocked|error)/i, score: 22, category: 'QUEUE_ERROR' },
+
+  // === DATA INTEGRITY ===
+  { regex: /\b(data|record|entry)\s+(corrupt|corrupted|inconsistent|invalid|missing)/i, score: 26, category: 'DATA_INTEGRITY' },
+  { regex: /\bchecksum\s+(mismatch|error|failed|invalid)/i, score: 26, category: 'DATA_INTEGRITY' },
+  { regex: /\bintegrity\s+(check|violation|error|failed)/i, score: 26, category: 'DATA_INTEGRITY' },
+
+  // === CONCURRENCY/LOCKING ===
+  { regex: /\b(lock|mutex|semaphore)\s+(timeout|failed|error|conflict|deadlock)/i, score: 26, category: 'CONCURRENCY_ERROR' },
+  { regex: /\brace\s+condition/i, score: 26, category: 'CONCURRENCY_ERROR' },
+  { regex: /\bconcurrent\s+(access|modification)\s+(error|conflict|violation)/i, score: 24, category: 'CONCURRENCY_ERROR' },
+
+  // Dynamically generated patterns
+  ...buildFieldValuePatterns(),
 ];
 
 /**
@@ -556,6 +747,160 @@ function formatErrorsForPrompt(errorData) {
 }
 
 /**
+ * Extracts key-value pairs from log messages for comparison
+ * This helps detect when the same field has different values between blue and green
+ * @param {Object[]} logs - Log entries
+ * @returns {Map} Map of field names to their values
+ */
+function extractKeyValuePairs(logs) {
+  const kvMap = new Map();
+
+  // Patterns to extract key-value pairs
+  const kvPatterns = [
+    // "Key: Value" or "Key : Value"
+    /([A-Za-z][A-Za-z0-9_ ]*?)\s*:\s*([^\s,;)\]]+)/g,
+    // "Key = Value" or "Key=Value"
+    /([A-Za-z][A-Za-z0-9_]*)\s*=\s*([^\s,;)\]]+)/g,
+    // "Key -> Value"
+    /([A-Za-z][A-Za-z0-9_ ]*?)\s*->\s*([^\s,;)\]]+)/g,
+    // "Key => Value"
+    /([A-Za-z][A-Za-z0-9_]*)\s*=>\s*([^\s,;)\]]+)/g,
+  ];
+
+  for (const log of logs) {
+    const message = log.message || '';
+
+    for (const pattern of kvPatterns) {
+      // Reset lastIndex for global regex
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(message)) !== null) {
+        const key = match[1].trim().toLowerCase();
+        const value = match[2].trim();
+
+        // Skip very short keys or common non-meaningful keys
+        if (key.length < 3 || ['the', 'and', 'for', 'with'].includes(key)) continue;
+
+        // Store the value (keep first occurrence of valid value, or update if current is invalid)
+        const isInvalidValue = isNullOrErrorValue(value);
+        const existing = kvMap.get(key);
+
+        if (!existing) {
+          kvMap.set(key, { value, isInvalid: isInvalidValue, count: 1 });
+        } else {
+          existing.count++;
+          // If existing is invalid but new one is valid, update
+          if (existing.isInvalid && !isInvalidValue) {
+            existing.value = value;
+            existing.isInvalid = false;
+          }
+        }
+      }
+    }
+  }
+
+  return kvMap;
+}
+
+/**
+ * Checks if a value represents null/undefined/error state
+ * @param {string} value - Value to check
+ * @returns {boolean} True if value indicates an error state
+ */
+function isNullOrErrorValue(value) {
+  if (!value) return true;
+  const lowerValue = value.toLowerCase().trim();
+  const nullIndicators = [
+    'undefined', 'null', 'nil', 'none', 'n/a', 'na', 'empty', 'blank',
+    '""', "''", '[]', '{}', '<null>', '<undefined>', '<empty>', '<none>',
+    '[null]', '[undefined]', '(null)', '(undefined)', 'nan', 'unknown',
+    'not defined', 'not set', 'unset', 'missing', 'absent', 'void',
+    'failed', 'failure', 'error', 'timeout', 'unavailable',
+  ];
+  return nullIndicators.some(ind => lowerValue === ind || lowerValue.startsWith(ind));
+}
+
+/**
+ * Compares key-value pairs between blue and green logs to find value divergences
+ * @param {Object[]} blueLogs - Blue log entries
+ * @param {Object[]} greenLogs - Green log entries
+ * @returns {Object} Comparison result with divergences
+ */
+function compareLogValues(blueLogs, greenLogs) {
+  const blueKV = extractKeyValuePairs(blueLogs);
+  const greenKV = extractKeyValuePairs(greenLogs);
+
+  const divergences = [];
+
+  // Check for fields that have valid values in blue but invalid in green
+  for (const [key, blueData] of blueKV) {
+    const greenData = greenKV.get(key);
+
+    if (greenData) {
+      // Field exists in both - check for value divergence
+      if (!blueData.isInvalid && greenData.isInvalid) {
+        divergences.push({
+          field: key,
+          blueValue: blueData.value,
+          greenValue: greenData.value,
+          type: 'GREEN_INVALID',
+          severity: 'HIGH',
+          description: `Field "${key}" has valid value "${blueData.value}" in BLUE but invalid value "${greenData.value}" in GREEN`,
+        });
+      } else if (blueData.isInvalid && !greenData.isInvalid) {
+        divergences.push({
+          field: key,
+          blueValue: blueData.value,
+          greenValue: greenData.value,
+          type: 'BLUE_INVALID',
+          severity: 'HIGH',
+          description: `Field "${key}" has invalid value "${blueData.value}" in BLUE but valid value "${greenData.value}" in GREEN`,
+        });
+      }
+    }
+  }
+
+  // Sort by severity (HIGH first)
+  divergences.sort((a, b) => (a.severity === 'HIGH' ? -1 : 1) - (b.severity === 'HIGH' ? -1 : 1));
+
+  return {
+    divergences,
+    count: divergences.length,
+    hasRegressions: divergences.some(d => d.type === 'GREEN_INVALID'),
+    hasImprovements: divergences.some(d => d.type === 'BLUE_INVALID'),
+  };
+}
+
+/**
+ * Formats value divergences for the prompt
+ * @param {Object} divergenceData - Result from compareLogValues
+ * @returns {string} Formatted divergence summary
+ */
+function formatDivergencesForPrompt(divergenceData) {
+  if (divergenceData.count === 0) {
+    return 'No significant value divergences detected between blue and green logs.';
+  }
+
+  const lines = [];
+
+  if (divergenceData.hasRegressions) {
+    lines.push('⚠️ REGRESSIONS DETECTED: Some fields have valid values in BLUE but invalid in GREEN:');
+    for (const div of divergenceData.divergences.filter(d => d.type === 'GREEN_INVALID')) {
+      lines.push(`  - ${div.description}`);
+    }
+  }
+
+  if (divergenceData.hasImprovements) {
+    lines.push('✅ IMPROVEMENTS: Some fields have invalid values in BLUE but valid in GREEN:');
+    for (const div of divergenceData.divergences.filter(d => d.type === 'BLUE_INVALID')) {
+      lines.push(`  - ${div.description}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * Builds the analysis prompt
  * @param {Object} params - Prompt parameters
  * @returns {string} Complete prompt
@@ -567,6 +912,9 @@ function buildAnalysisPrompt({ blueLogs, greenLogs, comparisonReport, repoContex
 
   // Extract and compare errors between blue and green using intelligent detection
   const blueErrorData = extractErrorEntries(blueLogs);
+
+  // Compare key-value pairs between workflows
+  const valueDivergences = compareLogValues(blueLogs, greenLogs);
   const greenErrorData = extractErrorEntries(greenLogs);
 
   const diffSummary = comparisonReport.logDifferences.slice(0, 10).map(d => {
@@ -661,10 +1009,13 @@ ${greenErrorSummary}
 ${errorDifferenceAnalysis}
 ${equivalenceHint}
 
+### Value Divergence Analysis (Field Comparison):
+${formatDivergencesForPrompt(valueDivergences)}
+
 ---
 
 ### Analysis Request
-Based on ALL the information above, especially the ERROR DETECTION RESULTS, provide:
+Based on ALL the information above, especially the ERROR DETECTION RESULTS and VALUE DIVERGENCES, provide:
 
 1. **Functional Equivalence**: Are these workflows functionally identical?
    - Answer YES only if there are no meaningful errors/failures in either workflow OR both have the same errors
