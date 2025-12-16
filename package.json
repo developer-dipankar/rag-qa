@@ -1,0 +1,33 @@
+{
+  "name": "elk-blue-green",
+  "version": "1.0.0",
+  "description": "Blue-green testing framework for comparing ELK logs from different workflow executions",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "compare": "node src/index.js",
+    "test": "node --test src/**/*.test.js"
+  },
+  "keywords": [
+    "elk",
+    "elasticsearch",
+    "blue-green",
+    "testing",
+    "log-comparison",
+    "rag",
+    "llm"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^11.1.0",
+    "csv-parse": "^5.5.2",
+    "deep-diff": "^1.0.2",
+    "glob": "^10.3.10"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+

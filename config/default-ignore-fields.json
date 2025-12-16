@@ -1,0 +1,41 @@
+{
+  "description": "Default fields to ignore during log comparison. These are typically dynamic fields that vary between executions.",
+  "ignoreFields": [
+    "@timestamp",
+    "timestamp",
+    "created_at",
+    "updated_at",
+    "request_id",
+    "requestId",
+    "session_id",
+    "sessionId",
+    "correlation_id",
+    "correlationId",
+    "trace_id",
+    "traceId",
+    "span_id",
+    "spanId",
+    "transaction_id",
+    "transactionId",
+    "uuid",
+    "id",
+    "_id",
+    "_csvIndex",
+    "host.name",
+    "host.ip",
+    "agent.id",
+    "process.pid",
+    "ecs.version",
+    "log.offset",
+    "event.ingested",
+    "event.created"
+  ],
+  "ignorePatterns": [
+    ".*_at$",
+    ".*_time$",
+    ".*_timestamp$",
+    ".*Id$",
+    ".*_id$"
+  ]
+}
+
