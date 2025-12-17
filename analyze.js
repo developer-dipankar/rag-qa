@@ -97,7 +97,7 @@ document.getElementById('analysisForm').addEventListener('submit', async (e) => 
 });
 
 function handleProgressEvent(event, progressLog, loadingText) {
-    const { stage, message } = event;
+    const { stage, message, data } = event;
 
     // Update main loading text based on stage
     const stageLabels = {
@@ -105,16 +105,47 @@ function handleProgressEvent(event, progressLog, loadingText) {
         'reading': '📖 Reading CSV files...',
         'comparing': '🔍 Comparing logs...',
         'rag': '🤖 AI Analysis in progress...',
+        'repo_scan': '📂 Scanning repositories...',
+        'patterns': '🔍 Extracting patterns...',
+        'files': '📁 Finding relevant files...',
+        'file_detail': '📄 Repository context...',
         'complete': '✅ Complete!'
     };
     if (stageLabels[stage]) {
         loadingText.textContent = stageLabels[stage];
     }
 
-    // Add to progress log
+    // Add to progress log with special formatting for repository files
     const logEntry = document.createElement('div');
     logEntry.className = `progress-entry progress-${stage}`;
-    logEntry.innerHTML = `<span class="progress-time">${new Date().toLocaleTimeString()}</span> ${escapeHtml(message)}`;
+
+    // Special formatting for file details
+    if (stage === 'file_detail' && data) {
+        logEntry.innerHTML = `
+            <span class="progress-time">${new Date().toLocaleTimeString()}</span>
+            <span class="repo-file">📄 <strong>${escapeHtml(data.repo)}</strong>/${escapeHtml(data.path)}</span>
+            <span class="repo-score">(score: ${data.score})</span>
+        `;
+        logEntry.style.paddingLeft = '20px';
+        logEntry.style.color = '#4CAF50';
+    } else if (stage === 'file_patterns') {
+        logEntry.innerHTML = `<span class="progress-time">${new Date().toLocaleTimeString()}</span> <span class="matched-patterns">${escapeHtml(message)}</span>`;
+        logEntry.style.paddingLeft = '40px';
+        logEntry.style.color = '#888';
+        logEntry.style.fontSize = '0.85em';
+    } else if (stage === 'patterns' && data) {
+        logEntry.innerHTML = `
+            <span class="progress-time">${new Date().toLocaleTimeString()}</span>
+            ${escapeHtml(message)}
+            <span class="pattern-sample" style="color: #888; font-size: 0.85em;"> [${data.sample?.join(', ') || ''}...]</span>
+        `;
+    } else if (stage === 'files') {
+        logEntry.innerHTML = `<span class="progress-time">${new Date().toLocaleTimeString()}</span> <strong>${escapeHtml(message)}</strong>`;
+        logEntry.style.color = '#2196F3';
+    } else {
+        logEntry.innerHTML = `<span class="progress-time">${new Date().toLocaleTimeString()}</span> ${escapeHtml(message)}`;
+    }
+
     progressLog.appendChild(logEntry);
     progressLog.scrollTop = progressLog.scrollHeight;
 }

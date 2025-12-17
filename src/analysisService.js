@@ -72,7 +72,7 @@ export async function analyzeWorkflowLogs(options = {}) {
   // Perform RAG analysis if enabled
   let ragResult = null;
   if (useRag) {
-    onProgress({ stage: 'rag', message: 'Starting AI-powered analysis...' });
+    onProgress({ stage: 'rag', message: '🤖 Starting AI-powered analysis...' });
 
     ragResult = await performRagAnalysis(blueLogs, greenLogs, report, {
       verbose,
@@ -81,13 +81,69 @@ export async function analyzeWorkflowLogs(options = {}) {
       blueCsvName,
       greenCsvName,
       onProgress: (progress) => {
+        // Forward progress messages
         if (progress.message) {
           onProgress({ stage: 'rag', message: progress.message });
+        }
+
+        // Handle repository scanning progress
+        if (progress.step === 'repo_scan' && progress.status === 'scanning_repo') {
+          onProgress({
+            stage: 'repo_scan',
+            message: `📂 ${progress.message}`,
+            data: { progress: progress.progress }
+          });
+        }
+
+        // Handle cache hit
+        if (progress.step === 'repo_scan' && progress.status === 'cache_hit') {
+          onProgress({ stage: 'repo_scan', message: `⚡ ${progress.message}` });
         }
       },
     });
 
-    onProgress({ stage: 'rag', message: 'AI analysis complete' });
+    // Report extracted patterns
+    if (ragResult.metadata?.extractedPatterns) {
+      const patterns = ragResult.metadata.extractedPatterns;
+      onProgress({
+        stage: 'patterns',
+        message: `🔍 Extracted ${patterns.length} patterns from logs`,
+        data: { count: patterns.length, sample: patterns.slice(0, 10) }
+      });
+    }
+
+    // Report relevant files found
+    if (ragResult.metadata?.relevantFiles && ragResult.metadata.relevantFiles.length > 0) {
+      const files = ragResult.metadata.relevantFiles;
+      onProgress({
+        stage: 'files',
+        message: `📁 Found ${files.length} relevant repository files:`,
+        data: { files }
+      });
+
+      // Send each file as a separate progress update
+      for (const file of files) {
+        const matchedStr = file.matchedPatterns?.slice(0, 5).join(', ') || 'N/A';
+        onProgress({
+          stage: 'file_detail',
+          message: `   📄 ${file.repo}/${file.path} (score: ${file.score})`,
+          data: {
+            repo: file.repo,
+            path: file.path,
+            score: file.score,
+            matchedPatterns: file.matchedPatterns
+          }
+        });
+        onProgress({
+          stage: 'file_patterns',
+          message: `      Matched: ${matchedStr}`,
+        });
+      }
+    } else {
+      onProgress({ stage: 'files', message: '⚠️ No relevant repository files found' });
+    }
+
+    onProgress({ stage: 'rag', message: '✅ AI analysis complete' });
   }
 
   onProgress({ stage: 'complete', message: 'Analysis complete' });

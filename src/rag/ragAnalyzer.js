@@ -35,26 +35,41 @@ Guidelines:
 7. Logs are not in any particular order. Do not assume any order based on the log entries alone.
 8. Check and analyze all blue and green logs entries thoroughly before making a decision.
 
+CRITICAL - Baseline Null Values (IMPORTANT):
+9. BLUE logs are the BASELINE (expected behavior). If a null/nil/undefined value exists in BLUE, it is NORMAL.
+10. Only flag null/nil/undefined values as ERRORS if they:
+    - Appear in GREEN but NOT in BLUE (this is a REGRESSION)
+    - Or if a field has a valid value in BLUE but is null/nil/undefined in GREEN
+11. DO NOT flag null/nil/undefined values as errors if they exist in BOTH blue and green - these are expected.
+12. Example: If @replied_to_message_sid=nil appears in BLUE baseline, it should NOT be flagged as an error in GREEN.
+
 CRITICAL - State and Error Detection:
-9. Pay special attention to session variable failures - look for patterns like "not found", "undefined", "null", or missing state that appears in one workflow but not the other. These are HIGH-PRIORITY functional differences.
-10. Treat the following as FUNCTIONALLY SIGNIFICANT differences (not cosmetic):
-    - Session variable retrieval failures (e.g., "get session variable not found" → undefined)
-    - Any value returning "undefined", "null", "N/A", or empty when it should have data
-    - ERROR, WARN, FAIL, Exception, or failure messages that differ between workflows
-    - Missing or incomplete data in one workflow vs another
-    - Cache misses, database lookup failures, or API call errors
-11. Flag any error messages, warnings, or failure conditions that appear in one workflow but not the other as MEANINGFUL differences.
-12. Identify state management issues as high-priority:
-    - Session variables not being set or retrieved correctly
-    - Missing context or state that was expected
-    - Data that exists in blue logs but is undefined/missing in green logs (or vice versa)
-    - Variables or fields that have values in one execution but return empty/undefined in another
+13. Pay special attention to session variable failures - but ONLY if they represent NEW failures in GREEN that don't exist in BLUE.
+14. Treat the following as FUNCTIONALLY SIGNIFICANT differences (not cosmetic):
+    - Session variable retrieval failures that are NEW in green (not in blue)
+    - Values that are valid in BLUE but return "undefined", "null", "N/A", or empty in GREEN
+    - ERROR, WARN, FAIL, Exception, or failure messages that appear in GREEN but not in BLUE
+    - Missing or incomplete data in GREEN that exists in BLUE
+    - Cache misses, database lookup failures, or API call errors that are NEW in GREEN
+15. Flag any error messages, warnings, or failure conditions as MEANINGFUL only if they appear in GREEN but not BLUE.
+16. Identify state management issues as high-priority:
+    - Session variables that work in BLUE but fail in GREEN
+    - Data that exists in blue logs but is undefined/missing in green logs
+    - Fields that have values in BLUE but return empty/undefined in GREEN
 
 Repository Code Analysis:
-13. Use the repository context to understand the expected workflow behavior
-14. Cross-reference log messages with code patterns to identify where failures originate
-15. Determine if the workflow differences indicate a bug in the code, configuration issue, or environmental problem
-16. Suggest which code files or functions are likely responsible for any session/state issues found`;
+17. Use the repository context to understand the expected workflow behavior
+18. Cross-reference log messages with code patterns to identify where failures originate
+19. Determine if the workflow differences indicate a bug in the code, configuration issue, or environmental problem
+20. Suggest which code files or functions are likely responsible for any session/state issues found
+
+MANDATORY - Repository File Citations:
+21. When suggesting root causes, you MUST cite specific files from the Repository Context section
+22. Use the exact file paths provided (e.g., "moviusConnectTeams/src/SIP/MessageUtil.ts")
+23. Reference specific functions, classes, or code patterns from the repository snippets
+24. If a log message mentions a controller, handler, or service name, find the matching file in the repository context
+25. For each error, trace it back to at least one repository file if possible
+26. Format file citations as: **File: \`repo/path/to/file.ext\`** followed by the relevant code pattern`;
 
 
 /**
@@ -674,10 +689,15 @@ ${file.content.substring(0, 500)}${file.content.length > 500 ? '...' : ''}`;
 /**
  * Extracts error/issue entries from logs using intelligent error detection
  * @param {Object[]} logs - Log entries
+ * @param {Object} options - Options for error extraction
+ * @param {Set<string>} options.baselineNullPatterns - Patterns from blue logs to ignore (for green analysis)
+ * @param {boolean} options.isValidationSet - Whether this is the green/validation set (applies baseline filtering)
  * @returns {Object} Detailed error analysis with entries and statistics
  */
-function extractErrorEntries(logs) {
+function extractErrorEntries(logs, options = {}) {
+  const { baselineNullPatterns = null, isValidationSet = false } = options;
   const errors = [];
+  const skippedBaseline = [];
   const categoryStats = {};
 
   logs.forEach((log, i) => {
@@ -685,6 +705,23 @@ function extractErrorEntries(logs) {
 
     if (analysis.isError) {
       const msg = log.message || '';
+
+      // For validation (green) logs, check if this error matches a baseline pattern
+      // If it does, it's NOT a regression - it exists in baseline too
+      if (isValidationSet && baselineNullPatterns && baselineNullPatterns.size > 0) {
+        const baselineCheck = isBaselineNullPattern(msg, baselineNullPatterns);
+        if (baselineCheck.isBaselinePattern) {
+          // Skip this error - it's a known baseline null pattern
+          skippedBaseline.push({
+            index: i + 1,
+            csvLineNumber: log._csvLineNumber || (i + 2),
+            pattern: baselineCheck.matchedPattern,
+            excerpt: msg.length > 100 ? msg.substring(0, 100) + '...' : msg,
+          });
+          return; // Skip adding to errors
+        }
+      }
+
       const excerpt = msg.length > 300 ? msg.substring(0, 300) + '...' : msg;
       const primaryCategory = analysis.categories[0] || 'GENERAL_ERROR';
 
@@ -716,6 +753,8 @@ function extractErrorEntries(logs) {
     stats: categoryStats,
     totalErrors: errors.length,
     highConfidenceCount: errors.filter(e => e.confidence === 'HIGH').length,
+    skippedBaseline, // Include skipped patterns for transparency
+    skippedBaselineCount: skippedBaseline.length,
   };
 }
 
@@ -832,6 +871,94 @@ function isNullOrErrorValue(value) {
 }
 
 /**
+ * Extracts null/nil/undefined patterns from baseline (blue) logs
+ * These patterns are considered "normal" and should NOT be flagged as errors
+ * @param {Object[]} blueLogs - Blue log entries (baseline)
+ * @returns {Set<string>} Set of normalized null patterns found in blue logs
+ */
+function extractBaselineNullPatterns(blueLogs) {
+  const patterns = new Set();
+
+  // Patterns that capture field=value or field: value where value is null-like
+  const nullValuePatterns = [
+    // @field=nil, @field=null, @field=undefined
+    /@([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(nil|null|undefined|none|n\/a|empty|""|\[\]|\{\})/gi,
+    // field: nil, field: null, field: undefined
+    /([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(nil|null|undefined|none|n\/a|empty)/gi,
+    // field => nil, field -> nil
+    /([A-Za-z_][A-Za-z0-9_]*)\s*(=>|->)\s*(nil|null|undefined|none|n\/a|empty)/gi,
+  ];
+
+  for (const log of blueLogs) {
+    const message = log.message || '';
+
+    for (const pattern of nullValuePatterns) {
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(message)) !== null) {
+        // Create a normalized pattern key: "fieldname:nullvalue"
+        const fieldName = match[1].toLowerCase().trim();
+        const nullValue = (match[2] || match[3]).toLowerCase().trim();
+        const patternKey = `${fieldName}:${nullValue}`;
+        patterns.add(patternKey);
+
+        // Also add just the field name for broader matching
+        patterns.add(`field:${fieldName}`);
+      }
+    }
+  }
+
+  return patterns;
+}
+
+/**
+ * Checks if an error pattern matches a baseline (blue) null pattern
+ * If it does, this is NOT a regression - it's expected behavior
+ * @param {string} message - Log message to check
+ * @param {Set<string>} baselinePatterns - Set of baseline null patterns from blue logs
+ * @returns {Object} { isBaselinePattern: boolean, matchedPattern: string|null }
+ */
+function isBaselineNullPattern(message, baselinePatterns) {
+  if (!baselinePatterns || baselinePatterns.size === 0) {
+    return { isBaselinePattern: false, matchedPattern: null };
+  }
+
+  const messageLower = message.toLowerCase();
+
+  // Check each baseline pattern
+  for (const pattern of baselinePatterns) {
+    if (pattern.startsWith('field:')) {
+      // Check if the field name appears with a null value in the message
+      const fieldName = pattern.substring(6);
+      // Look for patterns like @fieldname=nil, fieldname: nil, etc.
+      const fieldPatterns = [
+        new RegExp(`@?${fieldName}\\s*[=:]\\s*(nil|null|undefined|none|n\\/a|empty)`, 'i'),
+        new RegExp(`${fieldName}\\s*(=>|->)\\s*(nil|null|undefined|none|n\\/a|empty)`, 'i'),
+      ];
+      for (const fp of fieldPatterns) {
+        if (fp.test(messageLower)) {
+          return { isBaselinePattern: true, matchedPattern: pattern };
+        }
+      }
+    } else {
+      // Direct field:value pattern
+      const [fieldName, nullValue] = pattern.split(':');
+      const checkPatterns = [
+        new RegExp(`@?${fieldName}\\s*[=:]\\s*${nullValue}`, 'i'),
+        new RegExp(`${fieldName}\\s*(=>|->)\\s*${nullValue}`, 'i'),
+      ];
+      for (const cp of checkPatterns) {
+        if (cp.test(messageLower)) {
+          return { isBaselinePattern: true, matchedPattern: pattern };
+        }
+      }
+    }
+  }
+
+  return { isBaselinePattern: false, matchedPattern: null };
+}
+
+/**
  * Compares key-value pairs between blue and green logs to find value divergences
  * @param {Object[]} blueLogs - Blue log entries
  * @param {Object[]} greenLogs - Green log entries
@@ -916,17 +1043,26 @@ function formatDivergencesForPrompt(divergenceData) {
  * @param {Object} params - Prompt parameters
  * @returns {string} Complete prompt
  */
-function buildAnalysisPrompt({ blueLogs, greenLogs, comparisonReport, repoContext, relevantFiles, blueCsvName = 'blue.csv', greenCsvName = 'green.csv' }) {
+function buildAnalysisPrompt({ blueLogs, greenLogs, comparisonReport, relevantFiles, blueCsvName = 'blue.csv', greenCsvName = 'green.csv' }) {
   const blueLogsSummary = summarizeLogs(blueLogs);
   const greenLogsSummary = summarizeLogs(greenLogs);
   const repoContextStr = formatRepoContext(relevantFiles);
 
+  // Extract baseline null patterns from blue logs - these are "normal" and should NOT be flagged
+  const baselineNullPatterns = extractBaselineNullPatterns(blueLogs);
+
   // Extract and compare errors between blue and green using intelligent detection
+  // Blue logs: extract all errors (no filtering)
   const blueErrorData = extractErrorEntries(blueLogs);
+
+  // Green logs: filter out errors that match baseline null patterns (not regressions)
+  const greenErrorData = extractErrorEntries(greenLogs, {
+    baselineNullPatterns,
+    isValidationSet: true,
+  });
 
   // Compare key-value pairs between workflows
   const valueDivergences = compareLogValues(blueLogs, greenLogs);
-  const greenErrorData = extractErrorEntries(greenLogs);
 
   const diffSummary = comparisonReport.logDifferences.slice(0, 10).map(d => {
     const diffs = d.differences.map(diff =>
@@ -980,6 +1116,13 @@ REASON: Blue workflow has ${blueTotalErrors} errors while Green has ${greenTotal
 Both workflows have no detected errors. Focus on other structural differences.`;
   }
 
+  // Build baseline patterns note
+  const baselineNote = baselineNullPatterns.size > 0
+    ? `NOTE: ${baselineNullPatterns.size} null/nil/undefined patterns were found in the blue baseline and are considered NORMAL.
+These patterns (e.g., @replied_to_message_sid=nil) are expected behavior and NOT flagged as errors.
+${greenErrorData.skippedBaselineCount > 0 ? `${greenErrorData.skippedBaselineCount} entries in green were skipped because they match baseline null patterns.` : ''}`
+    : '';
+
   return `## Workflow Comparison Analysis Request
 
 ### Summary Statistics
@@ -1010,10 +1153,17 @@ The following errors were automatically detected using a scoring-based pattern a
 High-confidence errors (score > 50) are almost certainly real issues that indicate FUNCTIONAL differences.
 YOU MUST address these findings in your analysis.
 
+**IMPORTANT - Baseline Null Values**:
+Null/nil/undefined values that appear in BOTH blue (baseline) AND green (validation) logs are NORMAL.
+These are expected behavior and should NOT be flagged as errors.
+Only flag null/nil/undefined values as errors if they appear in GREEN but NOT in BLUE (regressions).
+${baselineNote}
+
 ### Blue Workflow Errors (${blueTotalErrors} total, ${blueHighConf} high-confidence):
 ${blueErrorSummary}
 
 ### Green Workflow Errors (${greenTotalErrors} total, ${greenHighConf} high-confidence):
+(Only showing NEW errors not present in baseline)
 ${greenErrorSummary}
 
 ### Error Comparison Result:
@@ -1041,18 +1191,24 @@ Based on ALL the information above, especially the ERROR DETECTION RESULTS and V
    - Timestamps, IDs = cosmetic
    - Session variable failures, exceptions, undefined values = FUNCTIONAL
 
-4. **Root Cause Suggestions**:
+4. **Root Cause Suggestions** (MUST include repository file citations):
    - For EACH error detected above, provide:
      * The exact CSV line number (e.g., "Line 35 in green.csv")
      * The error category and what went wrong
-     * Which code file or component might be responsible
-   - IMPORTANT: Always reference the CSV line numbers from the error detection results so the user can locate the exact log entry
+     * **Repository File**: Cite the specific file from the Repository Context section (e.g., \`moviusConnectTeams/src/SIP/MessageUtil.ts\`)
+     * **Code Reference**: Quote the relevant function/class/code pattern from the repository snippet
+   - IMPORTANT: Always reference the CSV line numbers AND repository files in your analysis
+   - If a log mentions a controller/service/handler, find the matching code file in the Repository Context
 
-5. **Confidence Level**: LOW/MEDIUM/HIGH
+5. **Repository Files Referenced**:
+   - List ALL repository files from the Repository Context that are relevant to the errors found
+   - Format: \`repo/path/file.ext\` - brief description of relevance
 
-6. **Recommendations**: Investigation or fixes needed
+6. **Confidence Level**: LOW/MEDIUM/HIGH
 
-Provide a structured response addressing the error detection findings. ALWAYS include the CSV line numbers in Root Cause Suggestions.`;
+7. **Recommendations**: Investigation or fixes needed, referencing specific code files to check
+
+Provide a structured response addressing the error detection findings. ALWAYS include CSV line numbers AND repository file citations in Root Cause Suggestions.`;
 }
 
 /**
@@ -1113,16 +1269,43 @@ export async function performRagAnalysis(blueLogs, greenLogs, comparisonReport, 
       // Step 3: Find relevant files based on log patterns
       onProgress({ step: 'finding_relevant', message: 'Finding relevant code files...' });
       const patterns = extractLogPatterns([...blueLogs, ...greenLogs]);
+      result.metadata.extractedPatterns = patterns;
 
       if (verbose) {
         console.log(chalk.dim(`  Extracted ${patterns.length} patterns from logs`));
+        // Show key patterns in categories
+        const controllerPatterns = patterns.filter(p => /controller|handler/i.test(p));
+        const classPatterns = patterns.filter(p => /^[A-Z][a-z]+(?:[A-Z][a-z]+)+$/.test(p));
+        const componentPatterns = patterns.filter(p => /sip|message|mcp|adk|sms/i.test(p));
+
+        if (controllerPatterns.length > 0) {
+          console.log(chalk.yellow(`    Controllers: ${controllerPatterns.slice(0, 5).join(', ')}`));
+        }
+        if (classPatterns.length > 0) {
+          console.log(chalk.yellow(`    Classes: ${classPatterns.slice(0, 5).join(', ')}`));
+        }
+        if (componentPatterns.length > 0) {
+          console.log(chalk.yellow(`    Components: ${componentPatterns.slice(0, 5).join(', ')}`));
+        }
       }
 
       relevantFiles = await findRelevantFiles(repoContext, patterns, { topK: 5 });
       result.metadata.relevantFilesCount = relevantFiles.length;
+      result.metadata.relevantFiles = relevantFiles.map(f => ({
+        repo: f.repo,
+        path: f.path,
+        score: f.relevanceScore,
+        matchedPatterns: f.matchedPatterns || []
+      }));
 
       if (verbose) {
         console.log(chalk.dim(`  Found ${relevantFiles.length} relevant files`));
+        console.log(chalk.cyan('\n  📁 Repository Files Included in Analysis:'));
+        for (const file of relevantFiles) {
+          console.log(chalk.cyan(`    • ${file.repo}/${file.path}`));
+          console.log(chalk.dim(`      Score: ${file.relevanceScore} | Matched: ${(file.matchedPatterns || []).slice(0, 5).join(', ')}`));
+        }
+        console.log('');
       }
     } catch (e) {
       if (verbose) {

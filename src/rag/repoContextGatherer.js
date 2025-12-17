@@ -252,7 +252,7 @@ export async function gatherRepositoryContext(options = {}) {
 }
 
 /**
- * Finds files relevant to log patterns using semantic search
+ * Finds files relevant to log patterns using enhanced weighted scoring
  * @param {Object} repoContext - Repository context
  * @param {string[]} logPatterns - Patterns extracted from logs
  * @param {Object} options - Search options
@@ -265,20 +265,98 @@ export async function findRelevantFiles(repoContext, logPatterns, options = {}) 
     return [];
   }
 
-  // Simple keyword-based matching (faster, no embeddings required)
+  // Enhanced keyword-based matching with weighted scoring
   if (!useEmbeddings) {
+    // Categorize patterns for weighted scoring
+    const controllerPatterns = logPatterns.filter(p =>
+      /controller|handler|processor|dispatcher|router/i.test(p)
+    );
+    const servicePatterns = logPatterns.filter(p =>
+      /service|gateway|manager|provider/i.test(p)
+    );
+    const errorPatterns = logPatterns.filter(p =>
+      /error|exception|fail|undefined|null|missing/i.test(p)
+    );
+    const componentPatterns = logPatterns.filter(p =>
+      /sip|message|event|mcp|adk|sms|whatsapp/i.test(p)
+    );
+
     const scored = repoContext.files.map(file => {
       let score = 0;
       const lowerContent = file.content.toLowerCase();
       const lowerPath = file.path.toLowerCase();
+      const matchedPatterns = [];
 
+      // Standard pattern matching
       for (const pattern of logPatterns) {
         const lowerPattern = pattern.toLowerCase();
-        if (lowerContent.includes(lowerPattern)) score += 2;
-        if (lowerPath.includes(lowerPattern)) score += 3;
+        if (lowerPattern.length < 3) continue; // Skip very short patterns
+
+        // Content match
+        if (lowerContent.includes(lowerPattern)) {
+          score += 2;
+          matchedPatterns.push(pattern);
+        }
+        // Path match (higher weight - more specific)
+        if (lowerPath.includes(lowerPattern)) {
+          score += 4;
+          matchedPatterns.push(`path:${pattern}`);
+        }
       }
 
-      return { ...file, relevanceScore: score };
+      // Bonus for controller/handler files matching controller patterns
+      for (const pattern of controllerPatterns) {
+        if (lowerPath.includes('controller') || lowerPath.includes('handler')) {
+          if (lowerContent.includes(pattern.toLowerCase())) {
+            score += 5;
+          }
+        }
+      }
+
+      // Bonus for service files matching service patterns
+      for (const pattern of servicePatterns) {
+        if (lowerPath.includes('service') || lowerPath.includes('gateway')) {
+          if (lowerContent.includes(pattern.toLowerCase())) {
+            score += 5;
+          }
+        }
+      }
+
+      // Bonus for files that might handle errors
+      for (const pattern of errorPatterns) {
+        if (lowerContent.includes(pattern.toLowerCase())) {
+          score += 3;
+        }
+      }
+
+      // Bonus for component-specific matches (SIP, MCP, etc.)
+      for (const pattern of componentPatterns) {
+        const lowerPattern = pattern.toLowerCase();
+        if (lowerPath.includes(lowerPattern) ||
+            (lowerContent.includes(lowerPattern) && lowerContent.includes('class '))) {
+          score += 4;
+        }
+      }
+
+      // Bonus for TypeScript/JavaScript files (more likely to have logic)
+      if (/\.(ts|js)$/.test(file.path)) {
+        score += 1;
+      }
+
+      // Bonus for config files matching patterns (likely relevant)
+      if (/\.(yml|yaml|conf|properties)$/.test(file.path)) {
+        for (const pattern of logPatterns) {
+          if (lowerContent.includes(pattern.toLowerCase())) {
+            score += 2;
+          }
+        }
+      }
+
+      return {
+        ...file,
+        relevanceScore: score,
+        matchedPatterns: [...new Set(matchedPatterns)].slice(0, 10)
+      };
     });
 
     return scored
@@ -316,6 +394,7 @@ export async function findRelevantFiles(repoContext, logPatterns, options = {}) 
 
 /**
  * Extracts key patterns from logs for context matching
+ * Enhanced to extract more meaningful patterns for code correlation
  * @param {Object[]} logs - Log entries
  * @returns {string[]} Extracted patterns
  */
@@ -325,18 +404,63 @@ export function extractLogPatterns(logs) {
   for (const log of logs) {
     // Extract from message field
     if (log.message) {
-      // Extract bracketed terms like [nSM:xxx]
+      // Extract bracketed terms like [nSM:xxx] or [uEVT:xxx]
       const brackets = log.message.match(/\[([^\]]+)\]/g) || [];
       brackets.forEach(b => {
         const term = b.replace(/[\[\]]/g, '').split(':')[0];
         if (term && term.length > 2) patterns.add(term);
       });
+
+      // Extract controller/class names (e.g., Event_Controller, ApplicationController)
+      const controllerMatches = log.message.match(/(\w+Controller|\w+_Controller)/gi) || [];
+      controllerMatches.forEach(m => patterns.add(m));
+
+      // Extract method names (e.g., process_command, before_encode)
+      const methodMatches = log.message.match(/::(\w+)[\s:(]/g) || [];
+      methodMatches.forEach(m => {
+        const method = m.replace(/::/g, '').replace(/[\s:(]/g, '');
+        if (method && method.length > 2) patterns.add(method);
+      });
+
+      // Extract class names with :: notation (e.g., McpMessage, MessageUtils)
+      const classMatches = log.message.match(/\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b/g) || [];
+      classMatches.forEach(m => patterns.add(m));
+
+      // Extract SIP-related patterns
+      const sipMatches = log.message.match(/\b(sip|SIP|Sip\w+)\b/gi) || [];
+      sipMatches.forEach(m => patterns.add(m));
+
+      // Extract command types (e.g., SipMessage, Correlation)
+      const commandMatches = log.message.match(/command[=:]["']?(\w+)/gi) || [];
+      commandMatches.forEach(m => {
+        const cmd = m.replace(/command[=:]["']?/i, '');
+        if (cmd && cmd.length > 2) patterns.add(cmd);
+      });
+
+      // Extract X_MCP_ prefixed values
+      const mcpMatches = log.message.match(/X_MCP_\w+/g) || [];
+      mcpMatches.forEach(m => patterns.add(m));
+
+      // Extract parameter names from logs (e.g., contact_info, user_id)
+      const paramMatches = log.message.match(/"(\w+)"=>/g) || [];
+      paramMatches.forEach(m => {
+        const param = m.replace(/["=>]/g, '');
+        if (param && param.length > 3) patterns.add(param);
+      });
+
+      // Extract error-related terms
+      const errorMatches = log.message.match(/\b(undefined|nil|null|error|exception|fail|missing)\b/gi) || [];
+      errorMatches.forEach(m => patterns.add(m.toLowerCase()));
     }
 
     // Extract from log file path
     if (log.log?.file?.path) {
       const filename = path.basename(log.log.file.path, path.extname(log.log.file.path));
       patterns.add(filename);
+
+      // Also extract the base name without .production or similar suffixes
+      const baseName = filename.replace(/\.(production|development|test|staging)$/i, '');
+      if (baseName !== filename) patterns.add(baseName);
     }
 
     // Extract from event type
@@ -347,7 +471,11 @@ export function extractLogPatterns(logs) {
     if (log.service?.name) patterns.add(log.service.name);
   }
 
-  return Array.from(patterns).filter(p => p.length > 2);
+  // Filter and return unique patterns
+  return Array.from(patterns)
+    .filter(p => p.length > 2 && p.length < 50)  // Reasonable length
+    .filter(p => !/^\d+$/.test(p))               // Exclude pure numbers
+    .filter(p => !/^[a-f0-9-]{8,}$/i.test(p));   // Exclude UUIDs/hashes
 }
 
 export default {
