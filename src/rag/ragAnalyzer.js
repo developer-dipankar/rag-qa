@@ -688,11 +688,17 @@ function extractErrorEntries(logs) {
       const excerpt = msg.length > 300 ? msg.substring(0, 300) + '...' : msg;
       const primaryCategory = analysis.categories[0] || 'GENERAL_ERROR';
 
+      // Get the CSV line number (actual line in the file)
+      const csvLineNumber = log._csvLineNumber || (i + 2); // +2 for header row and 1-based indexing
+      const logFilePath = log.log?.file?.path || log['log.file.path'] || 'unknown';
+
       // Track category statistics
       categoryStats[primaryCategory] = (categoryStats[primaryCategory] || 0) + 1;
 
       errors.push({
         index: i + 1,
+        csvLineNumber,
+        logFilePath,
         category: primaryCategory,
         confidence: analysis.confidence,
         score: analysis.score,
@@ -716,9 +722,10 @@ function extractErrorEntries(logs) {
 /**
  * Formats extracted errors for the prompt
  * @param {Object} errorData - Result from extractErrorEntries
+ * @param {string} csvFileName - Name of the CSV file (for display)
  * @returns {string} Formatted error summary
  */
-function formatErrorsForPrompt(errorData) {
+function formatErrorsForPrompt(errorData, csvFileName = 'CSV') {
   if (errorData.totalErrors === 0) {
     return 'No errors or state issues detected.';
   }
@@ -736,7 +743,11 @@ function formatErrorsForPrompt(errorData) {
   // Add individual errors (limit to top 10 for prompt size)
   const topErrors = errorData.entries.slice(0, 10);
   for (const err of topErrors) {
-    lines.push(`[${err.index}] ${err.category} (${err.confidence}, score: ${err.score}): ${err.excerpt}`);
+    // Include CSV line number for easy reference
+    const lineRef = `Line ${err.csvLineNumber} in ${csvFileName}`;
+    const logFile = err.logFilePath !== 'unknown' ? ` | Source: ${err.logFilePath}` : '';
+    lines.push(`[${lineRef}${logFile}] ${err.category} (${err.confidence}, score: ${err.score}):`);
+    lines.push(`  → ${err.excerpt}`);
   }
 
   if (errorData.entries.length > 10) {
@@ -905,7 +916,7 @@ function formatDivergencesForPrompt(divergenceData) {
  * @param {Object} params - Prompt parameters
  * @returns {string} Complete prompt
  */
-function buildAnalysisPrompt({ blueLogs, greenLogs, comparisonReport, repoContext, relevantFiles }) {
+function buildAnalysisPrompt({ blueLogs, greenLogs, comparisonReport, repoContext, relevantFiles, blueCsvName = 'blue.csv', greenCsvName = 'green.csv' }) {
   const blueLogsSummary = summarizeLogs(blueLogs);
   const greenLogsSummary = summarizeLogs(greenLogs);
   const repoContextStr = formatRepoContext(relevantFiles);
@@ -924,9 +935,9 @@ function buildAnalysisPrompt({ blueLogs, greenLogs, comparisonReport, repoContex
     return `Entry #${d.index + 1}:\n${diffs}`;
   }).join('\n\n');
 
-  // Build comparative error section with detailed statistics
-  const blueErrorSummary = formatErrorsForPrompt(blueErrorData);
-  const greenErrorSummary = formatErrorsForPrompt(greenErrorData);
+  // Build comparative error section with detailed statistics (include CSV file names for line references)
+  const blueErrorSummary = formatErrorsForPrompt(blueErrorData, blueCsvName);
+  const greenErrorSummary = formatErrorsForPrompt(greenErrorData, greenCsvName);
 
   // Determine error comparison analysis
   let errorDifferenceAnalysis = '';
@@ -1030,13 +1041,18 @@ Based on ALL the information above, especially the ERROR DETECTION RESULTS and V
    - Timestamps, IDs = cosmetic
    - Session variable failures, exceptions, undefined values = FUNCTIONAL
 
-4. **Root Cause Suggestions**: Which code files might be responsible?
+4. **Root Cause Suggestions**:
+   - For EACH error detected above, provide:
+     * The exact CSV line number (e.g., "Line 35 in green.csv")
+     * The error category and what went wrong
+     * Which code file or component might be responsible
+   - IMPORTANT: Always reference the CSV line numbers from the error detection results so the user can locate the exact log entry
 
 5. **Confidence Level**: LOW/MEDIUM/HIGH
 
 6. **Recommendations**: Investigation or fixes needed
 
-Provide a structured response addressing the error detection findings.`;
+Provide a structured response addressing the error detection findings. ALWAYS include the CSV line numbers in Root Cause Suggestions.`;
 }
 
 /**
@@ -1053,6 +1069,8 @@ export async function performRagAnalysis(blueLogs, greenLogs, comparisonReport, 
     reposDir = '/Users/dipankar/Repos',
     model = DEFAULT_MODEL,
     onProgress = () => {},
+    blueCsvName = 'blue.csv',
+    greenCsvName = 'green.csv',
   } = options;
 
   const result = {
@@ -1120,13 +1138,22 @@ export async function performRagAnalysis(blueLogs, greenLogs, comparisonReport, 
       comparisonReport,
       repoContext,
       relevantFiles,
+      blueCsvName,
+      greenCsvName,
     });
 
     result.prompt = prompt;
 
     if (verbose) {
       console.log(chalk.dim('\n--- PROMPT SENT TO LLM ---'));
-      console.log(chalk.dim(prompt.substring(0, 2000) + (prompt.length > 2000 ? '\n... [truncated]' : '')));
+      // Show first part and error detection section which is near the end
+      const errorSectionStart = prompt.indexOf('## ⛔⚠️ CRITICAL: INTELLIGENT ERROR DETECTION');
+      if (errorSectionStart > 0 && prompt.length > 4000) {
+        console.log(chalk.dim(prompt.substring(0, 2000) + '\n... [middle truncated] ...\n'));
+        console.log(chalk.dim(prompt.substring(errorSectionStart)));
+      } else {
+        console.log(chalk.dim(prompt.substring(0, 5000) + (prompt.length > 5000 ? '\n... [truncated]' : '')));
+      }
       console.log(chalk.dim('--- END PROMPT ---\n'));
     }
 
@@ -1135,8 +1162,8 @@ export async function performRagAnalysis(blueLogs, greenLogs, comparisonReport, 
     const analysis = await generateCompletion(prompt, {
       model,
       system: SYSTEM_PROMPT,
-      temperature: 0.3,
-      maxTokens: 2048,
+      temperature: 0.5,
+      maxTokens: 4096,
     });
 
     result.analysis = analysis;

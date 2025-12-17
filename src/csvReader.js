@@ -129,6 +129,10 @@ export async function readLogsFromCsv(filePath, options = {}) {
     if (!log._csvIndex) {
       log._csvIndex = index;
     }
+    // Add actual CSV line number (index + 2: +1 for header row, +1 for 1-based line numbering)
+    if (!log._csvLineNumber) {
+      log._csvLineNumber = index + 2;
+    }
     return log;
   });
 

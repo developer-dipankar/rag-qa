@@ -72,10 +72,16 @@ program
       if (options.useRag) {
         console.log(chalk.cyan('\n🤖 Starting AI-powered analysis...\n'));
 
+        // Extract just the file names from the paths for display
+        const blueCsvName = blueFilePath.split('/').pop();
+        const greenCsvName = greenFilePath.split('/').pop();
+
         ragResult = await performRagAnalysis(blueLogs, greenLogs, report, {
           verbose: options.ragVerbose,
           reposDir: options.reposDir,
           model: options.ragModel,
+          blueCsvName,
+          greenCsvName,
           onProgress: (progress) => {
             if (progress.message) {
               console.log(chalk.dim(`  ${progress.message}`));
