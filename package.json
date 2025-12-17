@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "compare": "node src/index.js",
+    "serve": "node server.js",
     "test": "node --test src/**/*.test.js"
   },
   "keywords": [
@@ -24,10 +25,11 @@
     "commander": "^11.1.0",
     "csv-parse": "^5.5.2",
     "deep-diff": "^1.0.2",
-    "glob": "^10.3.10"
+    "express": "^5.2.1",
+    "glob": "^10.3.10",
+    "multer": "^2.0.2"
   },
   "engines": {
     "node": ">=18.0.0"
   }
 }
-
