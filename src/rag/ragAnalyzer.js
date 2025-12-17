@@ -1227,6 +1227,7 @@ export async function performRagAnalysis(blueLogs, greenLogs, comparisonReport, 
     onProgress = () => {},
     blueCsvName = 'blue.csv',
     greenCsvName = 'green.csv',
+    noCache = false,
   } = options;
 
   const result = {
@@ -1260,7 +1261,7 @@ export async function performRagAnalysis(blueLogs, greenLogs, comparisonReport, 
     try {
       repoContext = await gatherRepositoryContext({
         reposDir,
-        useCache: true,
+        useCache: !noCache,
         onProgress: (p) => onProgress({ step: 'repo_scan', ...p }),
       });
 

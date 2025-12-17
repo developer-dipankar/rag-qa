@@ -26,6 +26,7 @@ document.getElementById('analysisForm').addEventListener('submit', async (e) => 
     const blueFile = document.getElementById('blueFile').files[0];
     const greenFile = document.getElementById('greenFile').files[0];
     const useRag = document.getElementById('useRag').checked;
+    const noCache = document.getElementById('noCache').checked;
     const reposDir = document.getElementById('reposDir').value;
 
     if (!blueFile || !greenFile) { alert('Please upload both CSV files'); return; }
@@ -33,6 +34,7 @@ document.getElementById('analysisForm').addEventListener('submit', async (e) => 
     formData.append('blueFile', blueFile);
     formData.append('greenFile', greenFile);
     formData.append('useRag', useRag);
+    formData.append('noCache', noCache);
     if (reposDir) formData.append('reposDir', reposDir);
 
     // Show loading

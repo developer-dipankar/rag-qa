@@ -36,6 +36,7 @@ export async function analyzeWorkflowLogs(options = {}) {
     reposDir = '/Users/dipankar/Repos',
     model = 'llama3:8b',
     verbose = false,
+    noCache = false,
     ignoreFields = [],
     ignorePatterns = [],
     unflatten = true,
@@ -80,6 +81,7 @@ export async function analyzeWorkflowLogs(options = {}) {
       model,
       blueCsvName,
       greenCsvName,
+      noCache,
       onProgress: (progress) => {
         // Forward progress messages
         if (progress.message) {

@@ -76,13 +76,14 @@ app.post('/api/analyze', upload.fields([
     const blueFile = req.files.blueFile[0];
     const greenFile = req.files.greenFile[0];
     const useRag = req.body.useRag === 'true';
+    const noCache = req.body.noCache === 'true';
     const reposDir = req.body.reposDir || '/Users/dipankar/Repos';
 
     console.log(`\n📊 Starting analysis...`);
     sendProgress('start', 'Starting analysis...');
     sendProgress('info', `📘 Blue file: ${blueFile.originalname}`);
     sendProgress('info', `📗 Green file: ${greenFile.originalname}`);
-    sendProgress('info', `🤖 RAG analysis: ${useRag ? 'enabled' : 'disabled'}`);
+    sendProgress('info', `🤖 RAG analysis: ${useRag ? 'enabled' : 'disabled'}${noCache ? ' (no cache)' : ''}`);
 
     // Perform analysis with progress callbacks
     const result = await analyzeWorkflowLogs({
@@ -91,6 +92,7 @@ app.post('/api/analyze', upload.fields([
       blueCsvName: blueFile.originalname,
       greenCsvName: greenFile.originalname,
       useRag,
+      noCache,
       reposDir,
       onProgress: (progress) => {
         console.log(`   ${progress.message}`);
